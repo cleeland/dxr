@@ -1,4 +1,5 @@
 #!/bin/sh
+exec /home/ccleeland/localbuilds/dxr/xref-tools/cxx-clang/cc.pl $@
 
 if [ -z $1 ]; then
 	echo "You should specify a compiler to run!";
@@ -20,4 +21,4 @@ compiler=$1
 shift;
 shift;
 
-$compiler $FLAGS $*
+$compiler $FLAGS $@
