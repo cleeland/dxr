@@ -43,6 +43,12 @@ HEREDOC
 )
 }
 
+if [ -z "$DXRSRC" ]; then
+  echo "Setting DXRSRC variable"
+  scriptsrc=${BASH_SOURCE[0]}
+  export DXRSRC=$(dirname $(readlink -f $scriptsrc))
+fi
+
 SRCDIR=$(get_var "$TREENAME" "sourcedir")
 OBJDIR=$(get_var "$TREENAME" "objdir")
 
@@ -54,12 +60,6 @@ fi
 if [ -z "$OBJDIR" ]; then
   echo -e "\e[1;33mThe object dir equals source dir (not recommended).\e[0m\n"
   export OBJDIR="$SRCDIR"
-fi
-
-if [ -z "$DXRSRC" ]; then
-  echo "Setting DXRSRC variable"
-  scriptsrc=${BASH_SOURCE[0]}
-  export DXRSRC=$(dirname $(readlink -f $scriptsrc))
 fi
 
 MAKE=${MAKE:-make}
