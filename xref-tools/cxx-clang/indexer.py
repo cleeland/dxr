@@ -691,7 +691,7 @@ def get_syntax_regions(blob, srcpath, treecfg, conn=None):
   return htmlifier.getSyntaxRegions()
 
 htmlifier = {}
-for f in ('.c', '.cc', '.cpp', '.h', '.hpp'):
+for f in ('.c', '.cc', '.cpp', '.cxx', '.h', '.hpp', '.hh'):
   htmlifier[f] = {'get_sidebar_links': get_sidebar_links,
       'get_link_regions': get_link_regions,
       'get_line_annotations': get_line_annotations,
