@@ -17,6 +17,7 @@ import sys
 import time
 import ctypes
 import tempfile
+import re
 
 # At this point in time, we've already compiled the entire build, so it is time
 # to collect the data. This process can be viewed as a pipeline.
@@ -312,9 +313,14 @@ def indextree(treecfg, doxref, dohtml, debugfile):
     last_dir = None
     conn = getdbconn(treecfg, dbdir)
 
+    exclude_re = re.compile('(docs/.*|.makefiles/.*|.*/\.mk\..*|.*_parse.[ch]|.*boostbuild.*)')
+
     for f in getOutputFiles():
       # In debug mode, we only care about some files
       if debugfile and not treecfg.sourcedir + '/' + f[0] in output_files: continue
+
+      if not exclude_re.match(f[0]) is None:
+        continue
 
       index_list.write(f[0] + '\n')
       cpypath = os.path.join(tmproot, f[0])
