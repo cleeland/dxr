@@ -15,7 +15,7 @@ if [ ! -f $DXRCONFIG ]; then
   fi
 fi
 
-echo $DXRCONFIG
+echo "Working against config <$DXRCONFIG>"
 
 readconfig() {
   echo -c "reading $2 from section '$1'" >&2
