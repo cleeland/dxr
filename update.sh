@@ -27,17 +27,15 @@ VCSPULL=`readconfig $TREE pullcommand`
 BUILDCMD=`readconfig $TREE buildcommand`
 DXRROOT=`readconfig DXR dxrroot`
 WWWROOT=`readconfig Web wwwdir`
+PATH=`readconfig $TREE buildpath`
+MAKEFLAGS=`readconfig $TREE makeflags`
+CFLAGS=`readconfig $TREE cflags`
 
 if [ "$DXRCONFIG" == "" -o "$TREE" == "" -o "$SOURCE" == "" -o "$BUILD" == "" -o "$VCSPULL" == "" -o "$BUILDCMD" == "" ]; then
   echo Usage: $0 DXRCONFIG TREE [REMOTE]
   echo The section [$TREE] must contain 'pullcommand' and 'buildcommand' keys in the configuration.
   exit 1
 fi
-
-PATH="/opt/dxr/bin/:$PATH"
-MAKEFLAGS='-j4 -s V=0'; export MAKEFLAGS
-CFLAGS=-std=gnu89; export CFLAGS
-# FIXME: disable warning: extension used [-pedantic]
 
 test "`command -v clang`" == "" && echo Failed: clang not found && exit 1
 # FIXME: the generic check doesn't work on Debian squeeze
