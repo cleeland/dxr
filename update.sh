@@ -69,7 +69,7 @@ if [ "$BUILDCMD" == "make -f client.mk build" ]; then
   cd $SOURCE
 fi
 
-$SHELL -c "$BUILDCMD" 2>&1 | grep -v 'Unprocessed kind' | grep -v 'clang: warning: argument unused during compilation' || exit 1
+$SHELL -c "$BUILDCMD" 2>&1 | tee make.log | grep -v 'Unprocessed kind' | grep -v 'clang: warning: argument unused during compilation' || exit 1
 NCSV=`find $BUILD -name "*.csv" | wc -l` && test "$NCSV" == "0" && echo Failed: No CSV files && exit 1
 echo ' '
 
