@@ -27,9 +27,13 @@ VCSPULL=`readconfig $TREE pullcommand`
 BUILDCMD=`readconfig $TREE buildcommand`
 DXRROOT=`readconfig DXR dxrroot`
 WWWROOT=`readconfig Web wwwdir`
-PATH=`readconfig $TREE buildpath`
+BUILDPATH=`readconfig $TREE buildpath`
 MAKEFLAGS=`readconfig $TREE makeflags`
 CFLAGS=`readconfig $TREE cflags`
+
+test -n "$BUILDPATH" && PATH=$BUILDPATH:$PATH
+export MAKEFLAGS
+export CFLAGS
 
 if [ "$DXRCONFIG" == "" -o "$TREE" == "" -o "$SOURCE" == "" -o "$BUILD" == "" -o "$VCSPULL" == "" -o "$BUILDCMD" == "" ]; then
   echo Usage: $0 DXRCONFIG TREE [REMOTE]
