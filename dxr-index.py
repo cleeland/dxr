@@ -305,7 +305,7 @@ def indextree(treecfg, doxref, dohtml, debugfile):
     last_dir = None
     conn = getdbconn(treecfg, dbdir)
 
-    exclude_re = re.compile('(docs/.*|.makefiles/.*|.*/\.mk\..*|.*_parse.[ch]|.*boostbuild.*)')
+    exclude_re = re.compile('(docs/.*|.makefiles/.*|.*/\.mk\..*|.*/core\.*|.*\.log|.*_parse.[ch]|.*boostbuild.*)')
 
     for f in getOutputFiles(conn):
       # In debug mode, we only care about some files
