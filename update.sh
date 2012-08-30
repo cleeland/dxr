@@ -15,11 +15,11 @@ if [ ! -f $DXRCONFIG ]; then
   fi
 fi
 
-echo "Working against config <$DXRCONFIG>"
+echo $DXRCONFIG
 
 readconfig() {
-  echo -c "reading $2 from section '$1'" >&2
-  cat $DXRCONFIG | sed -n "/^\[$1\]/,/^\[.*\]/p" | grep "^[[:space:]]*$2[[:space:]]*=" | sed "s/.*$2[[:space:]]*=[:space:]*//"
+  echo "reading $2 from section '$1'" >&2
+  cat $DXRCONFIG | sed -n "/^\[$1\]/,/^\[.*\]/p" | grep "^[[:space:]]*$2[[:space:]]*=" | sed "s/[^=]*=[:space:]*//"
 }
 SOURCE=`readconfig $TREE sourcedir`
 BUILD=`readconfig $TREE objdir`
@@ -58,8 +58,8 @@ echo ' '
 rm -Rf $BUILD # clear, including CSV and configure caches
 
 # Mozilla IDL files need special treatment
-if [ "$BUILDCMD" == "make -f client.mk build" ]; then
-  make -f client.mk configure
+if [[ "$BUILDCMD" =~ "make -f client.mk build" ]]; then
+  $SHELL -c "$BUILDCMD configure"
   cd $BUILD
   for f in $(find -name 'autoconf.mk'); do
     echo '-include $(DXRROOT)/plugins/moztools/myrules.mk' >> ${f/autoconf/myrules}

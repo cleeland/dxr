@@ -8,34 +8,17 @@ import sys
 import os
 import ConfigParser
 import re
+import string
 
-# Get the DXR installation point from dxr.config
-config = ConfigParser.ConfigParser()
-try:
-  config.read(['/etc/dxr/dxr.config', './dxr.config'])
-  sys.path.append(config.get('DXR', 'dxrroot'))
-except:
-  msg = sys.exc_info()[1] # Python 2/3 compatibility
-  print 'Content-Type: text/html\n'
-  print '<body><h3>Error: Failed to open either %s/dxr.config ' \
-        'or /etc/dxr/dxr.config</h3><p>%s</body>' % (os.getcwd(), msg)
-  sys.exit (0)
-import dxr
-import dxr.stopwatch
-from dxr import queries
+import dxr_server
+from dxr_server.stopwatch import StopWatch
+from dxr_server import queries
 
-try:
-  ctypes_init_tokenizer = ctypes.CDLL(config.get('DXR', 'dxrroot') + "/sqlite/libdxr-code-tokenizer.so").dxr_code_tokenizer_init
-  ctypes_init_tokenizer ()
-except:
-  msg = sys.exc_info()[1] # Python 2/3 compatibility
-  print "Could not load tokenizer: %s" % msg
-  sys.exit (0)
 
-watch = dxr.stopwatch.StopWatch()
+watch = StopWatch()
 
 def redirect_to(str, path, line=None):
-  url = '%s/%s/%s.html' % (dxrconfig.virtroot, tree, path)
+  url = '%s/%s/%s.html' % (dxr_server.virtroot, tree, path)
   url += '?string=' + cgi.escape(str)
 
   if line is not None:
@@ -49,7 +32,7 @@ def maybe_redirect(string):
     return False
 
   # match for filenames
-  row = conn.execute("SELECT path FROM files where path like ?", ("%%/%s" % (string,),)).fetchall()
+  row = conn.execute("SELECT path FROM files WHERE path NOT LIKE '/%' AND path LIKE ?", ("%%/%s" % (string,),)).fetchall()
 
   if row is not None and len(row) == 1:
     redirect_to(string, row[0][0]);
@@ -99,8 +82,8 @@ def print_user_timing():
 </small>"""
 
 def like_escape(val):
-  return 'LIKE "%' + val.replace("\\", "\\\\").replace("_", "\\_") \
-    .replace("%", "\\%") + '%" ESCAPE "\\"'
+  return '%' + val.replace("\\", "\\\\").replace("_", "\\_") \
+    .replace("%", "\\%") + '%'
 
 def GetLine(rowid, line, col):
   row = conn.execute('SELECT fts.content, (SELECT path FROM files where files.ID = fts.rowid) FROM fts where fts.rowid = ?', (rowid,)).fetchone()
@@ -135,14 +118,15 @@ def GetLine(rowid, line, col):
 def regexp(expr, item):
   reg = re.compile(expr)
   try:
-    return reg.search(item) is not None
+    return reg.search(re.escape (item)) is not None
   except:
     return False
 
 def processString(string, path=None, ext=None, regexp=None):
   global watch
 
-  vrootfix = dxrconfig.virtroot
+  string = string.strip()
+  vrootfix = dxr_server.virtroot
   if vrootfix == '/':
     vrootfix = ''
   if ext is not None and ext[0] == '.':
@@ -181,8 +165,8 @@ def processString(string, path=None, ext=None, regexp=None):
     else:
       search_col = cols[0]
 
-    for row in conn.execute('SELECT %s , (SELECT path FROM files WHERE files.ID = %s.file_id), file_line, file_col FROM %s WHERE %s %s;' % (
-        cols[0], table, table, search_col, like_escape(string))).fetchall():
+    for row in conn.execute('SELECT %s , (SELECT path FROM files WHERE files.ID = %s.file_id), file_line, file_col FROM %s WHERE %s LIKE ? ESCAPE "\\";' % (
+        cols[0], table, table, search_col), (like_escape(string),)).fetchall():
       results.append((row[0], row[1], row[2], row[3]))
     printSidebarResults(str.capitalize(table), results)
 
@@ -208,9 +192,9 @@ def processString(string, path=None, ext=None, regexp=None):
   watch.start('query')
 
   if regexp is None:
-    matches = queries.getFTSMatches(conn, string)
+    matches = queries.getFTSMatches(conn, string, path, ext)
   else:
-    matches = queries.getRegexMatches(conn, string)
+    matches = queries.getRegexMatches(conn, string, path, ext)
 
   for row in matches:
     if first:
@@ -225,7 +209,7 @@ def processString(string, path=None, ext=None, regexp=None):
       print '<div class="searchfile"><a href="%s/%s/%s.html">%s</a></div><ul class="searchresults">' % (vrootfix, tree, row[0], row[0])
 
     line_str = cgi.escape(row[2])
-    line_str = re.sub(r'(?i)(' + string + ')', '<b>\\1</b>', line_str)
+    line_str = re.sub(r'(?i)(' + re.escape(string) + ')', '<b>\\1</b>', line_str)
 
     print '<li class="searchresult"><a href="%s/%s/%s.html#l%s">%s:</a>&nbsp;&nbsp;%s</li>' % (vrootfix, tree, row[0], row[1] + 1, row[1] + 1, line_str)
     prevpath = row[0]
@@ -238,16 +222,22 @@ def processString(string, path=None, ext=None, regexp=None):
     print '</ul>'
 
 def processType(type, path=None):
-  for type in conn.execute('select *, (SELECT path FROM files WHERE files.ID=types.file_id) AS file_path from types where tname like "' + type + '%";').fetchall():
+  query_str = """select *, (SELECT path FROM files WHERE files.ID=types.file_id)
+                 AS file_path from types where tname like ? """
+  args = ['%s%%' % (type)]
+
+  if path is not None:
+    query_str, args = queries.filterByPath(query_str, args, path)
+
+  for type in conn.execute(query_str, args).fetchall():
     tname = cgi.escape(type['tname'])
-    if not path or re.search(path, type['file_path']):
-      info = type['tkind']
-      if info == 'typedef':
-        typedef = conn.execute('SELECT ttypedef FROM typedefs WHERE tid=?',
-            (type['tid'],)).fetchone()[0]
-        info += ' ' + cgi.escape(typedef)
-      print '<h3>%s (%s)</h3>' % (tname, info)
-      print GetLine(type['file_id'], type['file_line'], type['file_col'])
+    info = type['tkind']
+    if info == 'typedef':
+      typedef = conn.execute('SELECT ttypedef FROM typedefs WHERE tid=?',
+          (type['tid'],)).fetchone()[0]
+      info += ' ' + cgi.escape(typedef)
+    print '<h3>%s (%s)</h3>' % (tname, info)
+    print GetLine(type['file_id'], type['file_line'], type['file_col'])
 
 def processDerived(derived, path=None):
   components = derived.split('::')
@@ -266,8 +256,13 @@ def processDerived(derived, path=None):
     func = None
 
   # Find the class in the first place
-  tname, tid = conn.execute('SELECT tqualname, tid FROM types WHERE ' +
-    'tqualname LIKE ? OR tqualname=?', ('%::' + base, base)).fetchall()[0]
+  row = conn.execute('SELECT tqualname, tid FROM types WHERE ' +
+    'tqualname LIKE ? OR tqualname=?', ('%::' + base, base)).fetchone()
+
+  if row is None:
+    return
+
+  tname, tid = row
 
   print '<h2>Results for %s:</h2>\n' % (cgi.escape(tname))
   # Find everyone who inherits this class
@@ -280,7 +275,7 @@ def processDerived(derived, path=None):
   if func is None:
     for t in types:
       direct = 'Direct' if t[2] is not None else 'Indirect'
-      if not path or re.search(path, t[6]):
+      if not path or re.search(re.escape(path), t[6]):
         print '<h3>%s (%s)</h3>' % (cgi.escape(t[0]), direct)
         print GetLine(t[3], t[4], t[5])
   else:
@@ -292,13 +287,13 @@ def processDerived(derived, path=None):
         ' fname = ?', (func,)).fetchall():
       tname = cgi.escape(typeMaps[method[0]])
       mname = cgi.escape(method[1])
-      if not path or re.search(path, method[5]):
+      if not path or re.search(re.escape(path), method[5]):
         print '<h3>%s::%s</h3>' % (tname, mname)
         print GetLine(method[2], method[3], method[4])
 
 def processMacro(macro):
-  for m in conn.execute('SELECT * FROM macros WHERE macroname LIKE "' +
-      macro + '%";').fetchall():
+  for m in conn.execute('SELECT * FROM macros WHERE macroname LIKE ?',
+                        ("%%%s%%" % (macro),)).fetchall():
     mname = m['macroname']
     if m['macroargs']:
       mname += m['macroargs']
@@ -307,14 +302,14 @@ def processMacro(macro):
     print GetLine(m['file_id'], m['file_line'], m['file_col'])
 
 def processFunction(func):
-  for f in conn.execute('SELECT * FROM functions WHERE fqualname LIKE "%' +
-      func + '%";').fetchall():
+  for f in conn.execute('SELECT * FROM functions WHERE fqualname LIKE ?',
+                        ("%%%s%%" % (func),)).fetchall():
     print '<h3>%s</h3>' % cgi.escape(f['fqualname'])
     print GetLine(f['file_id'], f['file_line'], f['file_col'])
 
 def processVariable(var):
-  for v in conn.execute('SELECT * FROM variables WHERE vname LIKE "%' +
-      var + '%";').fetchall():
+  for v in conn.execute('SELECT * FROM variables WHERE vname LIKE ?',
+                        ("%%%s%%" % (var),)).fetchall():
     qual = v['modifiers'] and v['modifiers'] or ''
     print '<h3>%s %s %s</h3>' % (cgi.escape(qual), cgi.escape(v['vtype']),
       cgi.escape(v['vname']))
@@ -326,12 +321,18 @@ def processWarnings(warnings, path=None):
     warnings = ''
 
   num_warnings = 0
-  for w in conn.execute("SELECT file_id, file_line, file_col, (SELECT path FROM files WHERE files.ID=warnings.file_id), wmsg FROM warnings WHERE wmsg LIKE '%" +
-      warnings + "%'").fetchall():
-    if not path or re.search(path, w[3]):
-      print '<h3>%s</h3>' % w[4]
-      print GetLine(w[0], w[1], w[2])
-      num_warnings += 1
+  query_str = """SELECT file_id, file_line, file_col, (SELECT path FROM files 
+                 WHERE files.ID=warnings.file_id), wmsg FROM warnings 
+                 WHERE wmsg LIKE ? """
+  args = [ '%%%s%%' % (warnings,) ]
+
+  if path is not None:
+    query_str, args = queries.filterByPath(query_str, args, path)
+
+  for w in conn.execute(query_str, args).fetchall():
+    print '<h3>%s</h3>' % w[4]
+    print GetLine(w[0], w[1], w[2])
+    num_warnings += 1
   if num_warnings == 0:
     print '<h3>No warnings found.</h3>'
 
@@ -340,8 +341,9 @@ def processCallers(caller, path=None, funcid=None):
   # Instead, let's first find the function that we're trying to find.
   cur = conn.cursor()
   if funcid is None:
-    cur.execute('SELECT *, (SELECT path FROM files WHERE files.ID=functions.file_id) AS file_path FROM functions WHERE fqualname %s' %
-      like_escape(caller))
+    cur.execute('SELECT *, (SELECT path FROM files WHERE files.ID=functions.file_id) ' + 
+                'AS file_path FROM functions WHERE fqualname LIKE ? ESCAPE "\\"',
+                (like_escape(caller),))
     funcinfos = cur.fetchall()
     if len(funcinfos) == 0:
       print '<h2>No results found</h2>'
@@ -367,7 +369,7 @@ def processCallers(caller, path=None, funcid=None):
       "FROM functions LEFT JOIN callers " +
       "ON (callers.callerid = functions.funcid) LEFT JOIN targets USING " +
       "(targetid) WHERE targets.funcid=?", (funcid, funcid)):
-    if not path or re.search(path, info['file_path']):
+    if not path or re.search(re.escape(path), info['file_path']):
       print '<h3>%s</h3>' % info['fqualname']
       print GetLine(info['file_id'], info['file_line'], info['file_col'])
   if cur.rowcount == 0:
@@ -384,43 +386,20 @@ form = dict((key, fieldStorage.getvalue(key)) for key in fieldStorage.keys())
 
 print 'Content-Type: text/html\n'
 
-# Load the configuration files
-try:
-  dxrconfig = dxr.load_config()
-except:
-  msg = sys.exc_info()[1] # Python 2/3 compatibility
-  print '<body><h3>Error: Failed to parse dxr.config ' \
-        'or /etc/dxr/dxr.config</h3><p>%s</body>' % msg
-  sys.exit (0)
-
 tree = 'undefined'
-for treecfg in dxrconfig.trees:
-  if 'tree' in form and treecfg.tree != form['tree']:
+for treecfg in dxr_server.trees:
+  if 'tree' in form and treecfg != form['tree']:
     continue
-  dxrconfig = treecfg
-  tree = treecfg.tree
+  tree = treecfg
   break
 
 if tree == 'undefined':
-  print dxrconfig.getTemplateFile("dxr-search-header.html") % 'Error'
+  print dxr_server.getTemplateFile("dxr-search-header.html") % 'Error'
   print '<h3>Error: Specified tree %s is invalid</h3>' % \
-    ('tree' in form and form['tree'] or tree)
+    ('tree' in form and cgi.escape(form['tree']) or tree)
   sys.exit (0)
 
-try:
-  # Load the database
-  dbname = tree + '.sqlite'
-  dxrdb = os.path.join(treecfg.dbdir, dbname)
-  conn = sqlite3.connect(dxrdb)
-  conn.text_factory = str
-  conn.create_function ('REGEXP', 2, regexp)
-  conn.execute('PRAGMA temp_store = MEMORY;')
-  conn.execute('SELECT initialize_tokenizer()')
-except:
-  msg = sys.exc_info()[1] # Python 2/3 compatibility
-  print dxrconfig.getTemplateFile("dxr-search-header.html") % 'Error'
-  print '<h3>Error: Failed to open %s</h3><p>%s' % (filename, msg)
-  sys.exit (0)
+conn = dxr_server.connect_db(tree)
 
 # This makes results a lot more fun!
 def collate_loc(str1, str2):
@@ -458,14 +437,16 @@ watch.start('total')
 for param, dispatch, hasSidebar, titlestr, optargs in searches:
   if param in form:
     titlestr = cgi.escape(titlestr % form[param])
-    print dxrconfig.getTemplateFile("dxr-search-header.html") % titlestr
+    t = string.Template(dxr_server.getTemplateFile("dxr-search-header.html"))
+    t = t.safe_substitute(tree = tree)
+    print t % titlestr
     if not hasSidebar:
       print '<div id="content">'
     kwargs = dict((k,form[k]) for k in optargs if k in form)
     dispatch(form[param], **kwargs)
     break
 else:
-  print dxrconfig.getTemplateFile("dxr-search-header.html") % 'Error'
+  print dxr_server.getTemplateFile("dxr-search-header.html") % 'Error'
   print '<h3>Error: unknown search parameters</h3>'
 
 watch.stop('total')
@@ -474,4 +455,4 @@ print_timing(watch)
 if 'request_time' in form:
   print_user_timing()
 
-print dxrconfig.getTemplateFile("dxr-search-footer.html")
+print dxr_server.getTemplateFile("dxr-search-footer.html")

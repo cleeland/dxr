@@ -114,8 +114,11 @@ def make_index_html(treecfg, dirname, fnames, htmlroot):
   srcpath = os.path.join(srcpath, genroot)
   of = open(os.path.join(dirname, 'index.html'), 'w')
   try:
-    html_header = treecfg.getTemplateFile("dxr-header.html")
-    of.write(html_header.replace('${sidebarActions}', '\n'))
+    html_header = string.Template(treecfg.getTemplateFile("dxr-header.html"))
+    title = os.path.basename(dirname) + "/"
+    if dirname == htmlroot:
+      title = treecfg.tree + "/"
+    of.write(html_header.safe_substitute(sidebarActions = "\n", title = title))
     of.write('''<div id="maincontent" dojoType="dijit.layout.ContentPane"
       region="center"><table id="index-list">
         <tr><th></th><th>Name</th><th>Last modified</th><th>Size</th></tr>
@@ -255,8 +258,6 @@ def indextree(treecfg, doxref, dohtml, debugfile):
 
   # dxr xref files (index + sqlitedb) go in wwwdir/treename-current/.dxr_xref
   # and we'll symlink it to wwwdir/treename later
-  htmlroot = os.path.join(treecfg.wwwdir, treecfg.tree + '-current')
-  oldroot = os.path.join(treecfg.wwwdir, treecfg.tree + '-old')
   tmproot = tempfile.mkdtemp(prefix = (os.path.join(treecfg.wwwdir, '.' + treecfg.tree + '.')))
   linkroot = os.path.join(treecfg.wwwdir, treecfg.tree)
 
@@ -337,6 +338,11 @@ def indextree(treecfg, doxref, dohtml, debugfile):
         for valid in ['text', 'xml', 'shellscript', 'perl', 'm4', 'xbel', 'javascript']:
           if valid in mimetype:
             return True
+
+        # Force indexing of nsis files
+        if srcpath[-4:] == '.nsh' or srcpath[-4:] == '.nsi':
+          return True
+
         return False
       if not is_text(srcpath):
         continue
@@ -364,21 +370,11 @@ def indextree(treecfg, doxref, dohtml, debugfile):
     def genhtml(treecfg, dirname, fnames):
       make_index_html(treecfg, dirname, fnames, tmproot)
     os.path.walk(tmproot, genhtml, treecfg)
-
-  if os.path.exists(oldroot):
-    shutil.rmtree(oldroot)
-
-  if os.path.exists(htmlroot):
-    shutil.move(htmlroot, oldroot)
-
+  
   os.chmod(tmproot, 0755)
-  shutil.move(tmproot, htmlroot)
+  shutil.move(tmproot, linkroot)
 
-  try:
-    os.unlink(linkroot)
-    os.symlink(htmlroot, linkroot)
-  except:
-    pass
+  
 
 def parseconfig(filename, doxref, dohtml, tree, debugfile):
   # Build the contents of an html <select> and open search links
@@ -389,6 +385,29 @@ def parseconfig(filename, doxref, dohtml, tree, debugfile):
   opensearch = ''
 
   dxrconfig = dxr.load_config(filename)
+
+  # Copy in the static stuff
+  shutil.rmtree(dxrconfig.wwwdir + "/",  True)
+  shutil.copytree(dxrconfig.dxrroot + "/www/", dxrconfig.wwwdir,  False)
+  
+  # Fill and copy templates that we'll need for search
+  # Note not everything is filled, just properties from dxrconfig
+  # See dxr/__init__.py:DxrConfig.getTemplateFile for details
+  os.mkdir(dxrconfig.wwwdir + "/dxr_server/templates")
+  for tmpl in ("dxr-search-header.html", "dxr-search-footer.html"):
+    with open(dxrconfig.wwwdir + "/dxr_server/templates/" + tmpl, 'w') as f:
+      f.write(dxrconfig.getTemplateFile(tmpl))
+  
+  # Substitute trees directly into the dxr_server sources, so no need for config
+  with open(dxrconfig.wwwdir + "/dxr_server/__init__.py", "r") as f:
+    t = string.Template(f.read())
+  with open(dxrconfig.wwwdir + "/dxr_server/__init__.py", "w") as f:
+    f.write(t.safe_substitute(trees = repr([tree] if tree else [cfg.tree for cfg in dxrconfig.trees]),
+                              virtroot = dxrconfig.virtroot))
+  
+  # Copy in to www the dxr tokenizer, and cross fingers that this binary
+  # works on the server we deploy to :)
+  shutil.copy(dxrconfig.dxrroot + "/sqlite/libdxr-code-tokenizer.so", dxrconfig.wwwdir + "/dxr_server/")
 
   for treecfg in dxrconfig.trees:
     # if tree is set, only index/build this section if it matches

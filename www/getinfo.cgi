@@ -4,29 +4,47 @@ import json
 import cgitb; cgitb.enable()
 import cgi
 import sqlite3
-import ConfigParser
 import os
 import sys
+import re
+import dxr_server
 
 def locUrl(path, line):
   return '%s/%s/%s.html#l%s' % (virtroot, tree, path, line)
 
 def getDeclarations(defid):
-  cur = conn.execute("SELECT (SELECT path FROM files WHERE files.ID=decldef.file_id) AS file_path, file_line, file_col FROM decldef WHERE defid=?",(defid,))
+  row = conn.execute("SELECT (SELECT path FROM files WHERE files.ID=decldef.file_id) AS file_path, file_line, file_col FROM decldef WHERE defid=?",(defid,)).fetchone()
+
+  if row is None:
+    row = conn.execute("SELECT (SELECT path FROM files WHERE files.ID = functions.file_id) AS file_path, file_line, file_col FROM functions where funcid = ?", (defid,)).fetchone()
+
+  if row is None:
+    return {}
+
   decls = []
-  for declpath, declline, declcol in cur:
-    decls.append({ "label": "Declared at %s:%d:%d" % (declpath, declline, declcol),
-      "icon": "icon-decl",
-      "url": locUrl(declpath, declline)
-    })
+  declpath, declline, declcol = row
+  decls.append({ "label": "Declared at %s:%d:%d" % (declpath, declline, declcol),
+    "icon": "icon-decl",
+    "url": locUrl(declpath, declline)
+  })
   return decls
 
 def getType(typeinfo, refs=[], deep=False):
+  typedef = None
+
   if isinstance(typeinfo, int):
     typeinfo = conn.execute("SELECT *, (SELECT path FROM files WHERE files.ID=types.file_id) AS file_path FROM types WHERE tid=?",
       (typeinfo,)).fetchone()
+
+  try:
+    label = '%s %s' % (typeinfo['tkind'], typeinfo['tqualname'])
+  except:
+    typedef = typeinfo['ttypedef']
+    label = 'Typedef to %s' % (typedef,)
+    pass
+
   typebase = {
-    "label": '%s %s' % (typeinfo['tkind'], typeinfo['tqualname']),
+    "label": label,
     "icon": "icon-type",
     "children": [{
       "label": 'Definition at %s:%d:%d' % (typeinfo['file_path'], typeinfo['file_line'], typeinfo['file_col']),
@@ -34,12 +52,20 @@ def getType(typeinfo, refs=[], deep=False):
       "url": locUrl(typeinfo['file_path'], typeinfo['file_line'])
     }]
   }
-  for typedef in conn.execute("SELECT * FROM typedefs WHERE tid=?",
-      (typeinfo['tid'],)):
-    typebase['children'].append({
-      "label": 'Real value %s' % (typedef['ttypedef']),
-      'icon': 'icon-def'
-    })
+
+  if typedef is not None:
+    words = typedef.split(' ', 2)
+    row = conn.execute ("""SELECT *, (SELECT path FROM files WHERE files.ID=decldef.definition_file_id)
+                           AS file_path FROM decldef WHERE defid IN (SELECT tid FROM types WHERE tkind=? AND tname=?)""",
+                        (words[0], words[1])).fetchone()
+
+    if row is not None:
+      typebase['children'].append({
+        "label": "Real value defined at %s:%d:%d" % (row['file_path'], row['definition_file_line'], row['definition_file_col']),
+        "icon": 'icon-def',
+        "url": locUrl(row['file_path'], row['definition_file_line'])
+      })
+
   typebase['children'].extend(getDeclarations(typeinfo['tid']))
   if not deep:
     return typebase
@@ -136,12 +162,14 @@ def getVariable(varinfo, refs=[]):
 
 def getCallee(targetid):
   cur = conn.cursor()
-  cur.execute("SELECT *, (SELECT path FROM files WHERE files.ID=functions.file_id) AS file_path FROM functions WHERE funcid=?", (targetid,))
-  if cur.rowcount > 0:
-    return getFunction(cur.fetchone())
-  cur.execute("SELECT *, (SELECT path FROM files WHERE files.ID=variables.file_id) AS file_path FROM variables WHERE varid=?", (targetid,))
-  if cur.rowcount > 0:
-    return getVariable(cur.fetchone())
+  row = cur.execute("SELECT *, (SELECT path FROM files WHERE files.ID=functions.file_id) AS file_path FROM functions WHERE funcid=?", (targetid,)).fetchone()
+
+  if row is not None:
+    return getFunction(row)
+
+  row = cur.execute("SELECT *, (SELECT path FROM files WHERE files.ID=variables.file_id) AS file_path FROM variables WHERE varid=?", (targetid,)).fetchone()
+  if row is not None:
+    return getVariable(row)
   cur.execute("SELECT funcid FROM targets WHERE targetid=?", (targetid,))
   refnode = { "label": "Dynamic call", "children": [] }
   for row in cur:
@@ -150,8 +178,17 @@ def getCallee(targetid):
 
 def getFunction(funcinfo, refs=[], useCallgraph=False):
   if isinstance(funcinfo, int):
+    defid = funcinfo
+    row = conn.execute("SELECT defid FROM decldef, functions WHERE decldef.file_id = functions.file_id AND " +
+                       "decldef.file_line = functions.file_line AND decldef.file_col = functions.file_col AND funcid = ?",
+                       (funcinfo,)).fetchone()
+    if row is not None:
+      funcinfo = row[0]
+
     funcinfo = conn.execute("SELECT *, (SELECT path FROM files WHERE files.ID=functions.file_id) AS file_path FROM functions WHERE funcid=?",
       (funcinfo,)).fetchone()
+  else:
+    defid = funcinfo['funcid']
   funcbase = {
     "label": '%s %s%s' % (funcinfo['ftype'], funcinfo['fqualname'], funcinfo['fargs']),
     "icon": "icon-member",
@@ -161,6 +198,7 @@ def getFunction(funcinfo, refs=[], useCallgraph=False):
       "url": locUrl(funcinfo['file_path'], funcinfo['file_line'])
     }]
   }
+
   # Reimplementations
   for row in conn.execute("SELECT *, (SELECT path FROM files WHERE files.ID=functions.file_id) AS file_path " +
       "FROM functions LEFT JOIN targets ON " +
@@ -198,10 +236,10 @@ def getFunction(funcinfo, refs=[], useCallgraph=False):
     for info in conn.execute("SELECT callerid FROM callers WHERE targetid=? " +
         "UNION SELECT callerid FROM callers LEFT JOIN targets " +
         "ON (callers.targetid = targets.targetid) WHERE funcid=?",
-        (funcinfo['funcid'], funcinfo['funcid'])):
+        (defid, defid)):
       callee['children'].append(getFunction(info[0]))
     for info in conn.execute("SELECT targetid FROM callers WHERE callerid=?",
-        (funcinfo['funcid'],)):
+         (defid,)):
       caller['children'].append(getCallee(info[0]))
     if len(caller['children']) > 0:
       funcbase['children'].append(caller)
@@ -230,6 +268,10 @@ def printMacro():
 def printType():
   row = conn.execute("SELECT *, (SELECT path FROM files WHERE files.ID=types.file_id) " +
                      "AS file_path FROM types WHERE tid=?", (refid,)).fetchone()
+  if row is None:
+    row = conn.execute ("SELECT *, (SELECT path FROM files WHERE files.ID=typedefs.file_id) " +
+                        "AS file_path FROM typedefs WHERE tid=?", (refid,)).fetchone()
+
   refs = conn.execute("SELECT *, (SELECT path FROM files WHERE files.ID=refs.file_id) " +
                       "AS file_path FROM refs WHERE refid=?", (refid,))
   printTree(json.dumps(getType(row, refs, True)))
@@ -243,12 +285,9 @@ def printVariable():
   printTree(json.dumps(getVariable(row, refs)))
 
 def printFunction():
-  row = conn.execute("SELECT *, (SELECT path FROM files WHERE files.ID=functions.file_id) " +
-                     " AS file_path FROM functions" +
-                     " WHERE funcid=?", (refid,)).fetchone()
   refs = conn.execute("SELECT *, (SELECT path FROM files WHERE files.ID=refs.file_id) " +
                       "AS file_path FROM refs WHERE refid=?", (refid,))
-  printTree(json.dumps(getFunction(row, refs, True)))
+  printTree(json.dumps(getFunction(int(refid), refs, True)))
 
 def printReference():
   row = None
@@ -277,35 +316,26 @@ def printTree(jsonString):
 
 form = cgi.FieldStorage()
 
-type = ''
-tree = ''
+type = None
+tree = None
 virtroot = ''
+refid = None
+forbidden = r'[^0-9a-zA-Z-_]'
 
-if form.has_key('type'):
+if form.has_key('type') and not re.search(forbidden, form['type'].value):
   type = form['type'].value
 
-if form.has_key('tree'):
+if form.has_key('tree') and not re.search(forbidden, form['tree'].value):
   tree = form['tree'].value
 
-if form.has_key('virtroot'):
-  virtroot = form['virtroot'].value
-
 if form.has_key('rid'):
-  refid = form['rid'].value
+  refid = int(form['rid'].value)
 
-try:
-  config = ConfigParser.ConfigParser()
-  config.read(['/etc/dxr/dxr.config', os.getcwd() + '/dxr.config'])
-  wwwdir = config.get('Web', 'wwwdir')
-except:
-  msg = sys.exc_info()[1] # Python 2/3 compatibility
-  printError('Error loading dxr.config: %s' % msg)
+if type is None or tree is None or refid is None:
+  printError('Invalid parameters')
   sys.exit(0)
 
-dxrdb = os.path.join(wwwdir, tree, '.dxr_xref', tree  + '.sqlite');
-conn = sqlite3.connect(dxrdb)
-conn.execute('PRAGMA temp_store = MEMORY;')
-conn.row_factory = sqlite3.Row
+conn = dxr_server.connect_db(tree)
 
 dispatch = {
     'var': printVariable,

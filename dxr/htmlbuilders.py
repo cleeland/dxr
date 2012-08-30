@@ -6,6 +6,7 @@ import cgi
 import itertools
 import sys
 import subprocess
+from string import Template
 from ConfigParser import ConfigParser
 
 class HtmlBuilder:
@@ -51,7 +52,7 @@ class HtmlBuilder:
       'Log': 'http://hg.mozilla.org/mozilla-central/filelog/$rev/$filename', \
       'Blame': 'http://hg.mozilla.org/mozilla-central/annotate/$rev/$filename', \
       'Diff': 'http://hg.mozilla.org/mozilla-central/diff/$rev/$filename', \
-      'Raw': 'http://hg.mozilla.org/mozilla-central/raw-diff/$rev/$filename' }
+      'Raw': 'http://hg.mozilla.org/mozilla-central/raw-file/$rev/$filename' }
     html+=('<div id="sidebarActions"><b>Actions</b>\n')
     # Pick up revision command and URLs from config file
     source_dir = self.srcroot
@@ -90,13 +91,16 @@ class HtmlBuilder:
   def toHTML(self, inhibit_sidebar):
     out = open(self.dstpath, 'w')
     sidebarActions = self.getSidebarActions()
-    self.html_header = self.html_header.replace('${sidebarActions}', sidebarActions);
 
     if inhibit_sidebar is True:
       str = 'false'
     else:
       str = 'true'
-    self.html_header = self.html_header.replace('${showLeftSidebar}', str)
+
+    t = Template(self.html_header)
+    self.html_header = t.substitute(sidebarActions = sidebarActions,
+                                    title = self.filename,
+                                    showLeftSidebar = str)
 
     out.write(self.html_header + '\n')
     self.writeSidebar(out)
@@ -136,9 +140,13 @@ class HtmlBuilder:
       for e in containers[cont]:
         img = len(e) > 3 and e[3] or "images/icons/page_white_code.png"
         title = len(e) > 2 and e[2] or e[0]
+        if len(e) > 5 and e[5]:
+          path = "%s/%s/%s.html" % (self.virtroot, self.treename, e[5])
+        else:
+          path = ''
         out.write('<img src="%s/%s" class="sidebarimage">' % (self.virtroot, img))
-        out.write('<a class="sidebarlink" title="%s" href="#l%d">%s</a><br>\n' %
-          (cgi.escape(title), int(e[1]), cgi.escape(e[0])))
+        out.write('<a class="sidebarlink" title="%s" href="%s#l%d">%s</a><br>\n' %
+          (cgi.escape(title), path, int(e[1]), cgi.escape(e[0])))
       if cont is not None:
         out.write('</div><br />\n')
 
