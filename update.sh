@@ -15,6 +15,14 @@ if [ ! -f $DXRCONFIG ]; then
   fi
 fi
 
+usage()
+{
+  echo Usage: $0 DXRCONFIG TREE [REMOTE]
+  echo The section [$TREE] must contain 'pullcommand' and 'buildcommand' keys in the configuration.
+  exit 1
+}
+test -z "$DXRCONFIG" && usage
+
 echo $DXRCONFIG
 
 readconfig() {
@@ -36,9 +44,7 @@ export MAKEFLAGS
 export CFLAGS
 
 if [ "$DXRCONFIG" == "" -o "$TREE" == "" -o "$SOURCE" == "" -o "$BUILD" == "" -o "$VCSPULL" == "" -o "$BUILDCMD" == "" ]; then
-  echo Usage: $0 DXRCONFIG TREE [REMOTE]
-  echo The section [$TREE] must contain 'pullcommand' and 'buildcommand' keys in the configuration.
-  exit 1
+    usage
 fi
 
 test "`command -v clang`" == "" && echo Failed: clang not found && exit 1
