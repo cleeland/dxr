@@ -386,19 +386,32 @@ def parseconfig(filename, doxref, dohtml, tree, debugfile):
 
   dxrconfig = dxr.load_config(filename)
 
+  print "Setting up " + dxrconfig.wwwdir
+  SENTINEL_FILENAME = os.path.join(dxrconfig.wwwdir, "00_THIS_DIRECTORY_WILL_GET_AUTO_REMOVED_YOU_HAVE_BEEN_WARNED")
   # Copy in the static stuff
-  shutil.rmtree(dxrconfig.wwwdir + "/",  True)
-  shutil.copytree(dxrconfig.dxrroot + "/www/", dxrconfig.wwwdir,  False)
+  if os.access(SENTINEL_FILENAME, os.F_OK):
+    print "...cleaning"
+    shutil.rmtree(dxrconfig.wwwdir + "/")
+
+  if not os.access(dxrconfig.wwwdir, os.F_OK):
+    print "...copying static stuff" 
+    shutil.copytree(dxrconfig.dxrroot + "/www/", dxrconfig.wwwdir,  False)
+    # effectively do a touch
+    sentinel = open(SENTINEL_FILENAME, "w")
+    sentinel.close()
   
   # Fill and copy templates that we'll need for search
   # Note not everything is filled, just properties from dxrconfig
   # See dxr/__init__.py:DxrConfig.getTemplateFile for details
-  os.mkdir(dxrconfig.wwwdir + "/dxr_server/templates")
+  tmpldir = os.path.join(dxrconfig.wwwdir, "dxr_server", "templates")
+  if not os.access(tmpldir, os.F_OK):
+    os.makedirs(tmpldir, 0o777)
   for tmpl in ("dxr-search-header.html", "dxr-search-footer.html"):
     with open(dxrconfig.wwwdir + "/dxr_server/templates/" + tmpl, 'w') as f:
       f.write(dxrconfig.getTemplateFile(tmpl))
   
   # Substitute trees directly into the dxr_server sources, so no need for config
+  print "...substituting trees"
   with open(dxrconfig.wwwdir + "/dxr_server/__init__.py", "r") as f:
     t = string.Template(f.read())
   with open(dxrconfig.wwwdir + "/dxr_server/__init__.py", "w") as f:
