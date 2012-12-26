@@ -13,6 +13,7 @@ import subprocess, select
 import time
 import fnmatch
 import getopt
+import sys
 from datetime import datetime
 
 def main(argv):
@@ -175,6 +176,9 @@ def index_files(tree, conn):
   print "Indexing files from the '%s' tree" % tree.name
   started = datetime.now()
   cur = conn.cursor()
+  dot_print_interval = 10
+  newline_print_interval = dot_print_interval * 60
+
   # Walk the directory tree top-down, this allows us to modify folders to
   # exclude folders matching an ignore_pattern
   for root, folders, files in os.walk(tree.source_folder, True):
@@ -214,6 +218,12 @@ def index_files(tree, conn):
 
       # Okay to this file was indexed
       indexed_files.append(f)
+      nfiles = len(indexed_files)
+      if nfiles % dot_print_interval == 0:
+        sys.stdout.write('.')
+        sys.stdout.flush()
+      if nfiles % newline_print_interval == 0:
+        sys.stdout.write("\n")
 
     # Exclude folders that match an ignore pattern
     # (The top-down walk allows us to do this)
