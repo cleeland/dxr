@@ -1,3 +1,6 @@
+export CC = clang
+export CXX = clang++
+
 PLUGINS = clang pygmentize
 
 BUILD_PLUGINS = $(PLUGINS:%=build-plugin-%)
