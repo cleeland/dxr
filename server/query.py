@@ -1,7 +1,14 @@
 import utils, cgi, codecs, struct
+import cgitb
+cgitb.enable()
 
 # Register filters by adding them to this list.
 filters = []
+
+def dbg(text):
+  dlog = open("querydebug.log", "a")
+  dlog.write(text + "\n")
+  dlog.close()
 
 # TODO
 #   - Special argument files-only to just search for file names
@@ -13,7 +20,7 @@ import re
 #TODO _parameters should be extracted from filters (possible if filters are defined first)
 # List of parameters to isolate in the search query, ie. path:mypath
 _parameters = ["path", "ext", "type", "type-ref", "function", "function-ref",
-"var", "var-ref", "macro", "macro-ref", "callers", "called-by", "warning",
+"var", "var-ref", "macro", "macro-ref", "callers", "callersd", "callersi", "called-by", "warning",
 "warning-opt", "bases", "derived", "member"]
 
 _parameters += ["-" + param for param in _parameters] + ["+" + param for param
@@ -49,8 +56,10 @@ class Query:
     self.keywords = []
     self.phrases = []
     self.notphrases = []
+    dbg("query text %s" % querystr)
     # We basically iterate over the set of matches left to right
     for token in (match.groupdict() for match in _pat.finditer(querystr)):
+      dbg("looking at token '%s'" % token)
       if token["param"]:
         if token["arg"]:
           self.params[token["param"]].append(token["arg"])
@@ -109,15 +118,25 @@ def fetch_results(conn, query,
   conditions = " files.ID = trg_index.id "
   arguments = []
 
+  dbg("fetch_results")
+
   has_extents = False
   for f in filters:
+    dbg("    looking at filter '%s'" % f.__class__.__name__)
     for conds, args, exts in f.filter(query):
+      dbg("        got a hit on '%s'"  % getattr(f, "param"))
+      dbg("        conds = " + conds)
+      dbg("        args = " + str(args))
       has_extents = exts or has_extents
       conditions += " AND " + conds
       arguments += args
 
   sql %= conditions
   arguments += [limit, offset]
+
+  dbg("    sql query '%s'" % sql)
+  dbg("    with args '%s'" % arguments)
+
 
   #TODO Actually do something with the has_extents, ie. don't fetch contents
 
@@ -133,9 +152,13 @@ def fetch_results(conn, query,
 
   cursor = conn.execute(sql, arguments)
 
+  dbg("    cursor returned is '%s'" % cursor)
+
   for path, icon, content, fileid, extents in cursor:
     elist = []
 
+    dbg("   looking for results in file path %s id %d" % (path, fileid))
+ 
     # Special hack for TriLite extents
     if extents:
       matchExtents = []
@@ -206,6 +229,7 @@ def direct_result(conn, query):
       for query, ie. complex query
   """
   term = query.single_term()
+  dbg("single_term returned '%s'" % term)
   if not term:
     return None
   cur = conn.cursor()
@@ -454,13 +478,19 @@ class ExistsLikeFilter(SearchFilter):
     self.params += (param, "+" + param, "-" + param, "+-" + param, "-+" + param)
     self.filter_sql = filter_sql
     self.ext_sql = ext_sql
-    self.qual_expr = " %s = ? " % qual_name
-    self.like_expr = """ %s LIKE ? ESCAPE "\\" """ % like_name
+    self.qual_expr = " %(qual_name)s = ? " % {'qual_name':qual_name}
+    self.like_expr = """ %(like_name)s LIKE ? ESCAPE "\\" """ % {'like_name':like_name }
+#    self.like_expr = """ %s LIKE ? ESCAPE "\\" """ % like_name
   def filter(self, query):
     for arg in query.params[self.param]:
+      dbg(" filter_sql = " + self.filter_sql)
+      dbg(" like_expr = " + self.like_expr)
+      xformed = self.filter_sql % {'like_expr':self.like_expr}
+      dbg(" xformed = " + xformed)
+      dbg(" num ? = %d" % xformed.count('?'))
       yield (
-              "EXISTS (%s)" % (self.filter_sql % self.like_expr),
-              ['%' + like_escape(arg) + '%'],
+              "EXISTS (%s)" % xformed,
+              ['%' + like_escape(arg) + '%'] * xformed.count('?'),
               self.ext_sql is not None
             )
     for arg in query.params["+" + self.param]:
@@ -477,16 +507,21 @@ class ExistsLikeFilter(SearchFilter):
             )
     for arg in query.params["-" + self.param]:
       yield (
-              "NOT EXISTS (%s)" % (self.filter_sql % self.like_expr),
-              ['%' + like_escape(arg) + '%'],
+              "NOT EXISTS (%s)" % xformed,
+              ['%' + like_escape(arg) + '%'] * xformed.count('?'),
               False
             )
   def extents(self, conn, query, fileid):
     if self.ext_sql:
       for arg in query.params[self.param]:
-        params = [fileid, '%' + like_escape(arg) + '%']
         def builder():
-          sql = self.ext_sql % self.like_expr
+          sql = self.ext_sql % {'like_expr':self.like_expr}
+          dbg("  like_expr = " + self.like_expr)
+          dbg("  extents sql = " + sql)
+          nsubs = self.like_expr.count('?') * self.ext_sql.count('%(like_expr)s')
+          dbg("  nsubs = %d" % nsubs)
+          params = [fileid] + [ '%' + like_escape(arg) + '%'] * nsubs;
+          dbg("  args = %s" % params)
           for start, end in conn.execute(sql, params):
             # Apparently sometime, None can occur in the database
             if start and end:
@@ -563,12 +598,12 @@ filters.append(ExistsLikeFilter(
 filters.append(ExistsLikeFilter(
     param         = "function",
     filter_sql    = """SELECT 1 FROM functions
-                       WHERE %s
+                       WHERE %(like_expr)s
                          AND functions.file_id = files.ID
                     """,
     ext_sql       = """SELECT functions.extent_start, functions.extent_end FROM functions
                        WHERE functions.file_id = ?
-                         AND %s
+                         AND %(like_expr)s
                        ORDER BY functions.extent_start
                     """,
     like_name     = "functions.fname",
@@ -668,11 +703,11 @@ filters.append(ExistsLikeFilter(
 
 
 # callers filter (direct-calls)
-filters.append(ExistsLikeFilter(
-    param         = "callers",
+indirect_callers = ExistsLikeFilter(
+    param         = "callersd",
     filter_sql    = """SELECT 1
                         FROM functions as caller, functions as target, callers
-                       WHERE %s
+                       WHERE %(like_expr)s
                          AND callers.targetid = target.funcid
                          AND callers.callerid = caller.funcid
                          AND caller.file_id = files.ID
@@ -681,7 +716,7 @@ filters.append(ExistsLikeFilter(
                         FROM functions
                        WHERE functions.file_id = ?
                          AND EXISTS (SELECT 1 FROM functions as target, callers
-                                      WHERE %s
+                                      WHERE %(like_expr)s
                                         AND callers.targetid = target.funcid
                                         AND callers.callerid = functions.funcid
                                     )
@@ -689,26 +724,54 @@ filters.append(ExistsLikeFilter(
                     """,
     like_name     = "target.fname",
     qual_name     = "target.fqualname"
-))
+)
+filters.append(indirect_callers)
 
 # callers filter (indirect-calls
-filters.append(ExistsLikeFilter(
-    param         = "callers",
+
+direct_callers = ExistsLikeFilter(
+    param         = "callersi",
     filter_sql    = """SELECT 1
-                        FROM functions as caller, functions as target, callers
-                       WHERE %s
-                         AND  EXISTS ( SELECT 1 FROM targets
-                                        WHERE targets.funcid = target.funcid
-                                          AND targets.targetid = callers.targetid
-                                     )
+                        FROM functions as caller, functions as target, callers, targets
+                       WHERE %(like_expr)s
+                         AND  targets.funcid = target.funcid
+                         AND targets.targetid = callers.targetid
                          AND callers.callerid = caller.funcid
                          AND caller.file_id = files.ID
                     """,
     ext_sql       = """SELECT functions.extent_start, functions.extent_end
                         FROM functions
                        WHERE functions.file_id = ?
+                         AND EXISTS (SELECT 1 FROM functions as target, callers, targets
+                                      WHERE %(like_expr)s
+                                        AND targets.funcid = target.funcid
+                                      AND targets.targetid = callers.targetid
+                                      AND callers.callerid = target.funcid
+                                        AND callers.callerid = functions.funcid
+                                    )
+                       ORDER BY functions.extent_start
+                    """,
+    like_name     = "target.fname",
+    qual_name     = "target.fqualname"
+)
+filters.append(direct_callers)
+
+# callers filter (combined direct-calls and indirect-calls)
+combined_callers = ExistsLikeFilter(
+    param         = "callers",
+    filter_sql    = direct_callers.filter_sql + " UNION " + indirect_callers.filter_sql,
+#    ext_sql       = direct_callers.ext_sql + " UNION " + direct_callers.ext_sql,
+    ext_sql       = """SELECT functions.extent_start, functions.extent_end
+                        FROM functions
+                       WHERE functions.file_id = ?
                          AND EXISTS (SELECT 1 FROM functions as target, callers
-                                      WHERE %s
+                                      WHERE %(like_expr)s
+                                        AND callers.targetid = target.funcid
+                                        AND callers.callerid = functions.funcid
+                    """ +
+                    " UNION " +
+                    """SELECT 1 FROM functions as target, callers, targets
+                                      WHERE %(like_expr)s
                                         AND EXISTS (
                                    SELECT 1 FROM targets
                                     WHERE targets.funcid = target.funcid
@@ -721,13 +784,14 @@ filters.append(ExistsLikeFilter(
                     """,
     like_name     = "target.fname",
     qual_name     = "target.fqualname"
-))
+)
+filters.append(combined_callers)
 
 # called-by filter (direct calls)
 filters.append(ExistsLikeFilter(
     param         = "called-by",
     filter_sql    = """SELECT 1
-                         FROM functions as target, functions as caller, callers
+                         FROM functions as target, functions as caller, callers, files
                         WHERE %s
                           AND callers.callerid = caller.funcid
                           AND callers.targetid = target.funcid
@@ -751,7 +815,7 @@ filters.append(ExistsLikeFilter(
 filters.append(ExistsLikeFilter(
     param         = "called-by",
     filter_sql    = """SELECT 1
-                         FROM functions as target, functions as caller, callers
+                         FROM functions as target, functions as caller, callers, files
                         WHERE %s
                           AND callers.callerid = caller.funcid
                           AND ( EXISTS (SELECT 1 FROM targets
@@ -782,7 +846,7 @@ filters.append(ExistsLikeFilter(
 #warning filter
 filters.append(ExistsLikeFilter(
     param         = "warning",
-    filter_sql    = """SELECT 1 FROM warnings
+    filter_sql    = """SELECT 1 FROM warnings, files
                         WHERE %s
                           AND warnings.file_id = files.ID """,
     ext_sql       = """SELECT warnings.extent_start, warnings.extent_end
@@ -798,7 +862,7 @@ filters.append(ExistsLikeFilter(
 #warning-opt filter
 filters.append(ExistsLikeFilter(
     param         = "warning-opt",
-    filter_sql    = """SELECT 1 FROM warnings
+    filter_sql    = """SELECT 1 FROM warnings, files
                         WHERE %s
                           AND warnings.file_id = files.ID """,
     ext_sql       = """SELECT warnings.extent_start, warnings.extent_end
@@ -814,7 +878,7 @@ filters.append(ExistsLikeFilter(
 # bases filter
 filters.append(ExistsLikeFilter(
     param         = "bases",
-    filter_sql    = """SELECT 1 FROM types as base, impl, types
+    filter_sql    = """SELECT 1 FROM types as base, impl, types, files
                         WHERE %s
                           AND impl.tbase = base.tid
                           AND impl.tderived = types.tid
@@ -836,7 +900,7 @@ filters.append(ExistsLikeFilter(
 # derived filter
 filters.append(ExistsLikeFilter(
     param         = "derived",
-    filter_sql    = """SELECT 1 FROM types as sub, impl, types
+    filter_sql    = """SELECT 1 FROM types as sub, impl, types, files
                         WHERE %s
                           AND impl.tbase = types.tid
                           AND impl.tderived = sub.tid
@@ -858,7 +922,7 @@ filters.append(ExistsLikeFilter(
 # member filter for functions
 filters.append(ExistsLikeFilter(
     param         = "member",
-    filter_sql    = """SELECT 1 FROM types as type, functions as mem
+    filter_sql    = """SELECT 1 FROM types as type, functions as mem, files
                         WHERE %s
                           AND mem.scopeid = type.tid AND mem.file_id = files.ID
                     """,
